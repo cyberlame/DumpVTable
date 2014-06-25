@@ -57,7 +57,7 @@ public:
     ~ScopedDllRegisterServer();
 
 private:
-    using DllRegisterServerType = HRESULT(__stdcall*)();
+    typedef HRESULT(__stdcall *DllRegisterServerType)();
 
     std::unique_ptr<
         std::remove_pointer<HMODULE>::type, decltype(&::FreeLibrary)> module;
@@ -215,8 +215,7 @@ bool AppMain(
     std::unique_ptr<ScopedDllRegisterServer> scopedRegister;
     if (isRegisterRequested)
     {
-        scopedRegister =
-            std::make_unique<ScopedDllRegisterServer>(targetFileFullPath);
+        scopedRegister.reset(new ScopedDllRegisterServer(targetFileFullPath));
     }
 
     const auto gapByASLR = GetGapByASLR(targetFileFullPath);
@@ -315,8 +314,8 @@ intptr_t GetGapByASLR(
         reinterpret_cast<uintptr_t>(module.get());
 
     // Read ImageBase field from the file.
-    auto file = std::ifstream{ FilePath, std::ios::binary };
-    if (!file)
+    std::ifstream file(FilePath, std::ios::binary);
+    if (!file.is_open())
     {
         const auto msg = FormatString("FATAL: std::ifstream failed.");
         throw std::runtime_error(msg);
@@ -505,7 +504,9 @@ bool GetSymbolNames(
         return false;
     }
 
-    const auto vtable = Symbol{ addressOfVTable, interfaceName };
+    Symbol vtable;
+    vtable.address = addressOfVTable;
+    vtable.name = interfaceName;
     Symbols.push_back(vtable);
 
     std::cout << FormatString(
@@ -642,7 +643,10 @@ Symbol GetSymbolForDescription(
         "INFO : [METHOD] %3d %p %S",
         FuncDesc->oVft / 4, address, finalName.c_str())
         << std::endl;
-    return{ address, finalName };
+    Symbol ret;
+    ret.address = address;
+    ret.name = finalName;
+    return ret;
 }
 
 
@@ -696,31 +700,31 @@ bool GenerateOutput(
     }
     auto scopedFile = make_unique_ptr(file, fclose);
 
-    const char SCRIPT[] = R"(
-def make_name_n(address, name):
-    result = idc.MakeNameEx(address, name, SN_CHECK | SN_NOWARN)
-    if result:
-        return name
-
-    for i in range(100):
-        name_n = '{0}_{1}'.format(name, i)
-        result = idc.MakeNameEx(address, name_n, SN_CHECK | SN_NOWARN)
-        if result:
-            return name_n
-
-
-def main():
-    for entry in DUMPED_DATA:
-        address = entry[0]
-        name = entry[1]
-        oldname = idc.Name(address)
-        newname = make_name_n(address, name)
-        print '%08x %-40s => %s' % (address, oldname, newname)
-
-
-if __name__ == '__main__':
-    main()
-)";
+    const char SCRIPT[] = "\
+def make_name_n(address, name):\n\
+    result = idc.MakeNameEx(address, name, SN_CHECK | SN_NOWARN)\n\
+    if result:\n\
+        return name\n\
+\n\
+    for i in range(100):\n\
+        name_n = '{0}_{1}'.format(name, i)\n\
+        result = idc.MakeNameEx(address, name_n, SN_CHECK | SN_NOWARN)\n\
+        if result:\n\
+            return name_n\n\
+\n\
+\n\
+def main():\n\
+    for entry in DUMPED_DATA:\n\
+        address = entry[0]\n\
+        name = entry[1]\n\
+        oldname = idc.Name(address)\n\
+        newname = make_name_n(address, name)\n\
+        print '%08x %-40s => %s' % (address, oldname, newname)\n\
+\n\
+\n\
+if __name__ == '__main__':\n\
+    main()\n\
+";
 
 
     fprintf(file, "DUMPED_DATA = [\n");
